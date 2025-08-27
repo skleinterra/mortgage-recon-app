@@ -1,4 +1,4 @@
-import os, tempfile
+import os, tempfile, re
 from pathlib import Path
 import streamlit as st
 import pandas as pd
@@ -35,17 +35,25 @@ pdf_files = st.file_uploader("Upload mortgage PDFs (text or scanned)", type=["pd
 dg_file   = st.file_uploader("Upload DataGridExport.xlsx (columns: Property, Description)", type=["xlsx"])
 
 # Optional overrides
-vendor_up = st.file_uploader("Upload VendorInformationLog.csv (optional, overrides default)", type=["csv"])
+vendor_up = st.file_uploader("Upload VendorInformationLog (CSV) (optional, overrides default)", type=["csv"])
 tpl_up    = st.file_uploader("Upload Mortgage_Template.xlsx (optional, overrides default)", type=["xlsx"])
 
-# --- Helpers ---
+# ---- Helpers ----
+EXPECTED_HEADERS = [
+ "Property","Mortgage 1st","Mortgage 2nd","Interest Mortgage 1st","Interest Mortgage 2nd",
+ "Tax Escrow","Escrow-Insurance","Escrow-Interest Reserve","Escrow-Debt Service Reserve",
+ "Escrow-Immediate Replacement Reserve","Escrow-Replacement Reserve","Escrow-Renovation Reserve","Other Escrows"
+]
+
+def _norm(s): 
+    return "".join(str(s).strip().lower().replace("-", " ").replace("_", " ").split())
+
 def _normalize_cols(cols):
-    return {c: "".join(str(c).strip().lower().replace("-", " ").replace("_", " ").split()) for c in cols}
+    return {c: _norm(c) for c in cols}
 
 def _pick(colmap, *cands):
-    """Return the original column name matching any normalized candidate."""
-    for orig, norm in colmap.items():
-        if norm in cands:
+    for orig, normed in colmap.items():
+        if normed in cands:
             return orig
     return None
 
@@ -58,56 +66,111 @@ def _load_default_vendor_df():
         "VendorInformationLog.csv, 'Vendor Information Log v2.csv')."
     )
 
-def _normalize_vendor_df(df_raw: pd.DataFrame) -> pd.DataFrame:
+# map friendly/wide column names to exact template headers
+WIDE_TO_TEMPLATE = {
+    "principalbalance": "Mortgage 1st",
+    "principalbalance1st": "Mortgage 1st",
+    "principalbalancefirst": "Mortgage 1st",
+    "principalbalance2nd": "Mortgage 2nd",
+    "principalbalancesecond": "Mortgage 2nd",
+    "interestmortgage1st": "Interest Mortgage 1st",
+    "interestmortgagefirst": "Interest Mortgage 1st",
+    "interestmortgage2nd": "Interest Mortgage 2nd",
+    "interestmortgagesecond": "Interest Mortgage 2nd",
+    "taxescrow": "Tax Escrow",
+    "escrowinsurance": "Escrow-Insurance",
+    "escrowinterestreserve": "Escrow-Interest Reserve",
+    "escrowdebtservicereserve": "Escrow-Debt Service Reserve",
+    "escrowimmediatereplacementreserve": "Escrow-Immediate Replacement Reserve",
+    "escrowreplacementreserve": "Escrow-Replacement Reserve",
+    "escrowrenovationreserve": "Escrow-Renovation Reserve",
+    "otherescrows": "Other Escrows",
+    # also allow exact header matches
+    **{_norm(h): h for h in EXPECTED_HEADERS}
+}
+
+SPLIT_RX = re.compile(r"[;\|\n,]")
+
+def _explode_wide_vendor(df_raw: pd.DataFrame) -> pd.DataFrame:
     """
-    Accepts a vendor CSV with flexible headers and returns a DataFrame
-    with required columns named exactly: Vendor, Pattern, MappedHeader, DetectPattern (DetectPattern optional).
+    Convert a wide vendor table (Vendor + many header columns)
+    into long rows: Vendor, Pattern, MappedHeader, DetectPattern(optional).
+    Any non-empty cell becomes one or more Pattern rows (split on ; , | newline).
     """
     if df_raw is None or df_raw.empty:
         raise ValueError("Vendor log is empty.")
     colmap = _normalize_cols(df_raw.columns)
 
-    # Required
     vendor_col = _pick(colmap, "vendor", "servicer", "lender")
-    pattern_col = _pick(colmap, "pattern", "field", "label", "line", "item", "keyword", "match", "matchtext", "description")
-    mapped_col = _pick(colmap, "mappedheader", "header", "mapto", "mapped", "column", "destination", "templateheader")
+    detect_col = _pick(colmap, "detectpattern", "detect", "vendordetect", "identifier", "regex")  # optional
 
-    # Optional
-    detect_col = _pick(colmap, "detectpattern", "detect", "vendordetect", "identifier", "regex")
+    if not vendor_col:
+        raise ValueError("Vendor log is missing a 'Vendor' column (e.g., Vendor/Servicer/Lender).")
 
-    missing = []
-    if not vendor_col:  missing.append("Vendor (e.g., Vendor/Servicer/Lender)")
-    if not pattern_col: missing.append("Pattern (e.g., Pattern/Field/Label/Line/Item/Keyword/Description)")
-    if not mapped_col:  missing.append("MappedHeader (e.g., MappedHeader/Header/MapTo/Column/Destination)")
-    if missing:
+    # find all header columns we can map
+    header_cols = []
+    for orig, normed in colmap.items():
+        if orig == vendor_col or (detect_col and orig == detect_col):
+            continue
+        if normed in WIDE_TO_TEMPLATE:
+            header_cols.append((orig, WIDE_TO_TEMPLATE[normed]))
+
+    if not header_cols:
         raise ValueError(
-            "Vendor log is missing required columns:\n - " + "\n - ".join(missing) +
-            f"\n\nFound columns: {list(df_raw.columns)}"
+            "No recognizable header columns found in vendor log. "
+            f"Expected something like: {', '.join(sorted(set(WIDE_TO_TEMPLATE.values())))}"
         )
 
-    df = df_raw.rename(columns={
-        vendor_col:  "Vendor",
-        pattern_col: "Pattern",
-        mapped_col:  "MappedHeader",
-        **({detect_col: "DetectPattern"} if detect_col else {})
-    }).copy()
+    rows = []
+    for _, r in df_raw.iterrows():
+        vendor = str(r[vendor_col]).strip()
+        detect = str(r[detect_col]).strip() if detect_col else ""
+        for orig, mapped in header_cols:
+            cell = r.get(orig, "")
+            if pd.isna(cell): 
+                continue
+            text = str(cell).strip()
+            if not text:
+                continue
+            parts = [p.strip() for p in SPLIT_RX.split(text) if p.strip()]
+            for pat in parts:
+                rows.append({"Vendor": vendor, "Pattern": pat, "MappedHeader": mapped, "DetectPattern": detect})
 
-    # Ensure required columns exist
-    for req in ["Vendor", "Pattern", "MappedHeader"]:
-        if req not in df.columns:
-            raise ValueError(f"Vendor log normalization failed: missing '{req}' after rename.")
+    if not rows:
+        raise ValueError("Vendor log has no non-empty pattern cells to use.")
+    return pd.DataFrame(rows, columns=["Vendor","Pattern","MappedHeader","DetectPattern"])
 
-    # Fill optional DetectPattern if absent
-    if "DetectPattern" not in df.columns:
-        df["DetectPattern"] = ""
+def _normalize_vendor_df(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    Accept either:
+    - Long format: columns ~ Vendor, Pattern, MappedHeader, (DetectPattern optional)
+    - Wide format: Vendor + one column per header with pattern lists
+    """
+    colmap = _normalize_cols(df_raw.columns)
 
-    # Trim whitespace
-    for c in ["Vendor", "Pattern", "MappedHeader", "DetectPattern"]:
-        df[c] = df[c].astype(str).fillna("").str.strip()
+    # detect "long" format quickly
+    maybe_vendor = _pick(colmap, "vendor", "servicer", "lender")
+    has_pattern = _pick(colmap, "pattern", "field", "label", "line", "item", "keyword", "match", "matchtext", "description")
+    has_mapped  = _pick(colmap, "mappedheader", "header", "mapto", "mapped", "column", "destination", "templateheader")
 
-    return df
+    if maybe_vendor and has_pattern and has_mapped:
+        detect_col = _pick(colmap, "detectpattern", "detect", "vendordetect", "identifier", "regex")
+        df = df_raw.rename(columns={
+            maybe_vendor: "Vendor",
+            has_pattern:  "Pattern",
+            has_mapped:   "MappedHeader",
+            **({detect_col: "DetectPattern"} if detect_col else {})
+        }).copy()
+        if "DetectPattern" not in df.columns:
+            df["DetectPattern"] = ""
+        for c in ["Vendor","Pattern","MappedHeader","DetectPattern"]:
+            df[c] = df[c].astype(str).fillna("").str.strip()
+        return df
 
-# --- Main button ---
+    # otherwise treat as wide
+    return _explode_wide_vendor(df_raw)
+
+# ---- Main button ----
 if st.button("Process"):
     if not pdf_files or not dg_file:
         st.error("Please upload at least PDFs and DataGridExport.xlsx")
@@ -115,7 +178,7 @@ if st.button("Process"):
 
     with st.spinner("Processing…"):
         try:
-            # ---- DataGrid (Excel) -> expects columns: Property (code), Description (name)
+            # ---- DataGrid (Excel) -> columns: Property(code), Description(name)
             dg_df_raw = pd.read_excel(dg_file, engine="openpyxl")
             cols_lower = {c.lower(): c for c in dg_df_raw.columns}
             if "property" in cols_lower and "description" in cols_lower:
@@ -126,7 +189,7 @@ if st.button("Process"):
             else:
                 raise ValueError("DataGridExport.xlsx must include columns named 'Property' and 'Description'.")
 
-            # ---- Vendor rules: uploaded OR default; normalize columns flexibly
+            # ---- Vendor rules: uploaded OR default; accept wide or long formats
             if vendor_up is not None:
                 raw_vendor_df = pd.read_csv(vendor_up)
                 vendor_df = _normalize_vendor_df(raw_vendor_df)
@@ -173,4 +236,4 @@ if st.button("Process"):
     )
 
 st.markdown("---")
-st.caption("Defaults live in /defaults. Vendor log columns are auto-detected (Vendor, Pattern, MappedHeader, DetectPattern). DataGrid uses columns: Property (code), Description (name).")
+st.caption("Vendor log: accepts LONG (Vendor, Pattern, MappedHeader[, DetectPattern]) or WIDE (one column per target header; patterns split by ; , | newline). DataGrid: Property(code), Description(name).")
