@@ -19,8 +19,11 @@ if PASS:
 BASE = Path(__file__).parent
 DEFAULTS_DIR = BASE / "defaults"
 
-# <- Adjust these two names to match your repo files exactly
-DEFAULT_VENDOR_PATH   = DEFAULTS_DIR / "VendorInformationLog.csv"
+# We support either filename to match your repo right now
+VENDOR_CANDIDATES = [
+    DEFAULTS_DIR / "VendorInformationLog.csv",
+    DEFAULTS_DIR / "Vendor Information Log v2.csv",
+]
 DEFAULT_TEMPLATE_PATH = DEFAULTS_DIR / "Mortgage_Template.xlsx"
 
 st.title("📊 Mortgage Statement Consolidation")
@@ -35,6 +38,13 @@ dg_file   = st.file_uploader("Upload DataGridExport.xlsx", type=["xlsx"])
 vendor_up = st.file_uploader("Upload VendorInformationLog.csv (optional, overrides default)", type=["csv"])
 tpl_up    = st.file_uploader("Upload Mortgage_Template.xlsx (optional, overrides default)", type=["xlsx"])
 
+def _load_default_vendor_df():
+    for p in VENDOR_CANDIDATES:
+        if p.exists():
+            return pd.read_csv(p), f"(default: {p.name})"
+    raise FileNotFoundError("Default vendor log not found in /defaults (expected one of: "
+                            "VendorInformationLog.csv, 'Vendor Information Log v2.csv').")
+
 if st.button("Process"):
     if not pdf_files or not dg_file:
         st.error("Please upload at least PDFs and DataGridExport.xlsx")
@@ -42,21 +52,29 @@ if st.button("Process"):
 
     with st.spinner("Processing…"):
         try:
-            # Required input (Excel)
-            datagrid_df = pd.read_excel(dg_file, engine="openpyxl")
+            # ---- Required input (Excel) ----
+            dg_df_raw = pd.read_excel(dg_file, engine="openpyxl")
 
-            # Vendor rules: uploaded OR default from repo
+            # Map your columns -> pipeline expectation
+            # Your Excel: Column A='Property' (code), Column B='Description' (name)
+            # Pipeline expects: PropertyCode, PropertyName
+            cols_lower = {c.lower(): c for c in dg_df_raw.columns}
+            if "property" in cols_lower and "description" in cols_lower:
+                datagrid_df = dg_df_raw.rename(columns={
+                    cols_lower["property"]: "PropertyCode",
+                    cols_lower["description"]: "PropertyName"
+                })
+            else:
+                raise ValueError("DataGridExport.xlsx must include columns named 'Property' and 'Description'.")
+
+            # ---- Vendor rules: uploaded OR default from repo ----
             if vendor_up is not None:
                 vendor_df = pd.read_csv(vendor_up)
                 used_vendor = f"(override: {vendor_up.name})"
             else:
-                if not DEFAULT_VENDOR_PATH.exists():
-                    st.error("Default vendor log not found in /defaults. Upload a CSV or add it to the repo.")
-                    st.stop()
-                vendor_df = pd.read_csv(DEFAULT_VENDOR_PATH)
-                used_vendor = f"(default: {DEFAULT_VENDOR_PATH.name})"
+                vendor_df, used_vendor = _load_default_vendor_df()
 
-            # Template: uploaded OR default from repo (bytes)
+            # ---- Template: uploaded OR default from repo (bytes) ----
             if tpl_up is not None:
                 template_bytes = tpl_up.read()
                 used_tpl = f"(override: {tpl_up.name})"
@@ -70,7 +88,7 @@ if st.button("Process"):
 
             pdf_blobs = [(f.name, f.read()) for f in pdf_files]
 
-            # Google Vision service-account JSON (if used)
+            # ---- Google Vision service-account JSON (if used) ----
             if os.environ.get("OCR_PROVIDER","gcv").lower() == "gcv":
                 sa_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON","")
                 if sa_json:
@@ -78,6 +96,7 @@ if st.button("Process"):
                     tmp.write(sa_json.encode("utf-8")); tmp.flush()
                     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = tmp.name
 
+            # ---- Run pipeline ----
             out_bytes = run_pipeline_in_memory(pdf_blobs, datagrid_df, vendor_df, template_bytes)
 
         except Exception as e:
@@ -93,4 +112,4 @@ if st.button("Process"):
     )
 
 st.markdown("---")
-st.caption("Defaults live in /defaults. Uploads (if provided) override them for that run only.")
+st.caption("Defaults live in /defaults. Uploads (if provided) override them for that run only. DataGrid uses columns: Property (code), Description (name).")
