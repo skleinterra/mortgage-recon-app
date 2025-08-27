@@ -19,9 +19,9 @@ if PASS:
 BASE = Path(__file__).parent
 DEFAULTS_DIR = BASE / "defaults"
 
-# NOTE: use your uploaded filenames here
-DEFAULT_VENDOR_PATH   = DEFAULTS_DIR / "Vendor Information Log v2.csv"   # <— your file name
-DEFAULT_TEMPLATE_PATH = DEFAULTS_DIR / "Mortgage_Template.xlsx"          # <— your template
+# <- Adjust these two names to match your repo files exactly
+DEFAULT_VENDOR_PATH   = DEFAULTS_DIR / "Vendor Information Log v2.csv"
+DEFAULT_TEMPLATE_PATH = DEFAULTS_DIR / "Mortgage_Template.xlsx"
 
 st.title("📊 Mortgage Statement Consolidation")
 st.caption("Uploads are processed in memory and discarded after the Excel is generated.")
@@ -31,19 +31,19 @@ st.write(f"**OCR Provider:** `{os.environ.get('OCR_PROVIDER','gcv').lower()}`")
 pdf_files = st.file_uploader("Upload mortgage PDFs (text or scanned)", type=["pdf"], accept_multiple_files=True)
 dg_file   = st.file_uploader("Upload DataGridExport.xlsx", type=["xlsx"])
 
-# Optional overrides (if you want to temporarily use different files than the defaults)
+# Optional overrides (to temporarily replace defaults)
 vendor_up = st.file_uploader("Upload VendorInformationLog.csv (optional, overrides default)", type=["csv"])
 tpl_up    = st.file_uploader("Upload Mortgage_Template.xlsx (optional, overrides default)", type=["xlsx"])
 
 if st.button("Process"):
     if not pdf_files or not dg_file:
-        st.error("Please upload at least PDFs and DataGridExport.xslx")
+        st.error("Please upload at least PDFs and DataGridExport.xlsx")
         st.stop()
 
     with st.spinner("Processing…"):
         try:
-            # Required input
-            datagrid_df = pd.read_xlsx(dg_file)
+            # Required input (Excel)
+            datagrid_df = pd.read_excel(dg_file, engine="openpyxl")
 
             # Vendor rules: uploaded OR default from repo
             if vendor_up is not None:
@@ -94,4 +94,3 @@ if st.button("Process"):
 
 st.markdown("---")
 st.caption("Defaults live in /defaults. Uploads (if provided) override them for that run only.")
-
