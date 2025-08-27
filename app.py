@@ -20,7 +20,7 @@ BASE = Path(__file__).parent
 DEFAULTS_DIR = BASE / "defaults"
 
 # <- Adjust these two names to match your repo files exactly
-DEFAULT_VENDOR_PATH   = DEFAULTS_DIR / "Vendor Information Log v2.csv"
+DEFAULT_VENDOR_PATH   = DEFAULTS_DIR / "VendorInformationLog.csv"
 DEFAULT_TEMPLATE_PATH = DEFAULTS_DIR / "Mortgage_Template.xlsx"
 
 st.title("📊 Mortgage Statement Consolidation")
