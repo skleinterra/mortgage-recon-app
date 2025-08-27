@@ -1,0 +1,8 @@
+streamlit
+pandas
+openpyxl
+pdfplumber
+rapidfuzz
+google-cloud-vision
+azure-ai-documentintelligence
+azure-core
