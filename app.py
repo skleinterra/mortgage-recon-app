@@ -32,7 +32,7 @@ st.write(f"**OCR Provider:** `{os.environ.get('OCR_PROVIDER','gcv').lower()}`")
 
 # Required each run
 pdf_files = st.file_uploader("Upload mortgage PDFs (text or scanned)", type=["pdf"], accept_multiple_files=True)
-dg_file   = st.file_uploader("Upload DataGridExport.xlsx (columns: Property, Description)", type=["xlsx"])
+dg_file   = st.file_uploader("Upload DataGridExport.xlsx (Property code + Description name)", type=["xlsx"])
 
 # Optional overrides
 vendor_up = st.file_uploader("Upload VendorInformationLog (CSV) (optional, overrides default)", type=["csv"])
@@ -45,7 +45,7 @@ EXPECTED_HEADERS = [
  "Escrow-Immediate Replacement Reserve","Escrow-Replacement Reserve","Escrow-Renovation Reserve","Other Escrows"
 ]
 
-def _norm(s): 
+def _norm(s):
     return "".join(str(s).strip().lower().replace("-", " ").replace("_", " ").split())
 
 def _normalize_cols(cols):
@@ -127,7 +127,7 @@ def _explode_wide_vendor(df_raw: pd.DataFrame) -> pd.DataFrame:
         detect = str(r[detect_col]).strip() if detect_col else ""
         for orig, mapped in header_cols:
             cell = r.get(orig, "")
-            if pd.isna(cell): 
+            if pd.isna(cell):
                 continue
             text = str(cell).strip()
             if not text:
@@ -170,6 +170,28 @@ def _normalize_vendor_df(df_raw: pd.DataFrame) -> pd.DataFrame:
     # otherwise treat as wide
     return _explode_wide_vendor(df_raw)
 
+def _normalize_datagrid(dg_df_raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    Robustly map DataGridExport.xlsx columns to:
+    - PropertyCode (from Property/Property Code/Prop/PropID/etc.)
+    - PropertyName (from Description/PropertyName/Name/etc.)
+    """
+    # Normalize headers to compare
+    normed = {str(c).strip().lower().replace(" ", "").replace("_",""): c for c in dg_df_raw.columns}
+
+    prop_col = None
+    desc_col = None
+    for key, orig in normed.items():
+        if key in ["property", "propertycode", "prop", "propid", "propertyid", "property_code"]:
+            prop_col = orig
+        if key in ["description", "propertyname", "name", "propname", "property_description", "propertydesc"]:
+            desc_col = orig
+
+    if not prop_col or not desc_col:
+        raise ValueError(f"DataGridExport.xlsx must include columns for Property (code) and Description (name). Found: {list(dg_df_raw.columns)}")
+
+    return dg_df_raw.rename(columns={prop_col: "PropertyCode", desc_col: "PropertyName"})
+
 # ---- Main button ----
 if st.button("Process"):
     if not pdf_files or not dg_file:
@@ -178,16 +200,9 @@ if st.button("Process"):
 
     with st.spinner("Processing…"):
         try:
-            # ---- DataGrid (Excel) -> columns: Property(code), Description(name)
+            # ---- DataGrid (Excel) -> robust column mapping
             dg_df_raw = pd.read_excel(dg_file, engine="openpyxl")
-            cols_lower = {c.lower(): c for c in dg_df_raw.columns}
-            if "property" in cols_lower and "description" in cols_lower:
-                datagrid_df = dg_df_raw.rename(columns={
-                    cols_lower["property"]: "PropertyCode",
-                    cols_lower["description"]: "PropertyName"
-                })
-            else:
-                raise ValueError("DataGridExport.xlsx must include columns named 'Property' and 'Description'.")
+            datagrid_df = _normalize_datagrid(dg_df_raw)
 
             # ---- Vendor rules: uploaded OR default; accept wide or long formats
             if vendor_up is not None:
@@ -236,4 +251,4 @@ if st.button("Process"):
     )
 
 st.markdown("---")
-st.caption("Vendor log: accepts LONG (Vendor, Pattern, MappedHeader[, DetectPattern]) or WIDE (one column per target header; patterns split by ; , | newline). DataGrid: Property(code), Description(name).")
+st.caption("Vendor log: accepts LONG (Vendor, Pattern, MappedHeader[, DetectPattern]) or WIDE (one column per target header; patterns split by ; , | newline). DataGrid: Property(code), Description(name) with robust header matching.")
