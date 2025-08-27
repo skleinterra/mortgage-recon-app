@@ -29,7 +29,7 @@ st.write(f"**OCR Provider:** `{os.environ.get('OCR_PROVIDER','gcv').lower()}`")
 
 # Required each run
 pdf_files = st.file_uploader("Upload mortgage PDFs (text or scanned)", type=["pdf"], accept_multiple_files=True)
-dg_file   = st.file_uploader("Upload DataGridExport.csv", type=["csv"])
+dg_file   = st.file_uploader("Upload DataGridExport.xlsx", type=["xlsx"])
 
 # Optional overrides (if you want to temporarily use different files than the defaults)
 vendor_up = st.file_uploader("Upload VendorInformationLog.csv (optional, overrides default)", type=["csv"])
@@ -37,13 +37,13 @@ tpl_up    = st.file_uploader("Upload Mortgage_Template.xlsx (optional, overrides
 
 if st.button("Process"):
     if not pdf_files or not dg_file:
-        st.error("Please upload at least PDFs and DataGridExport.csv")
+        st.error("Please upload at least PDFs and DataGridExport.xslx")
         st.stop()
 
     with st.spinner("Processing…"):
         try:
             # Required input
-            datagrid_df = pd.read_csv(dg_file)
+            datagrid_df = pd.read_xlsx(dg_file)
 
             # Vendor rules: uploaded OR default from repo
             if vendor_up is not None:
